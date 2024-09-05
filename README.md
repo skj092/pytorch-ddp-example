@@ -33,17 +33,14 @@ dataset = datasets.MNIST(
 sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank)
 dataloader = DataLoader(dataset, batch_size=64, sampler=sampler)
 
-model = Net().to(device)
-ddp_model = DDP(model, device_ids=[rank])
-
-model = Net().to(device)
 # Wrap the model
+model = Net().to(device)
 ddp_model = DDP(model, device_ids=[rank])
 
-# Instead of using model parameters, use ddp_model parameters
+# Set the sampler for the dataloader and use the wrapped DDP model
 for epoch in range(10):
-    sampler.set_epoch(epoch) # Set epoch for sampler
-    ddp_model.train()        # Set model to training mode
+    sampler.set_epoch(epoch)
+    ddp_model.train()
     for batch_idx, (data, target) in enumerate(dataloader):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
