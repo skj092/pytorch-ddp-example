@@ -1,10 +1,7 @@
-import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 
@@ -34,9 +31,29 @@ class Net(nn.Module):
         return output
 
 
-def train(rank, world_size):
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+def train(model, device, train_loader, optimizer, criterion, epoch):
+    model.train()
+    for batch_idx, (data, target) in enumerate(train_loader):
+        data, target = data.to(device), target.to(device)
+        optimizer.zero_grad()
+        output = model(data)
+        loss = criterion(output, target)
+        loss.backward()
+        optimizer.step()
+        if batch_idx % 100 == 0:
+            print(f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)} '
+                  f'({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item():.6f}')
+
+
+def main():
     torch.manual_seed(42)
+
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print(f"Using {torch.cuda.device_count()} GPU(s)")
+    else:
+        device = torch.device("cpu")
+        print("Using CPU")
 
     transform = transforms.Compose([
         transforms.ToTensor(),
@@ -45,37 +62,20 @@ def train(rank, world_size):
 
     dataset = datasets.MNIST(
         'data', train=True, download=True, transform=transform)
-    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank)
-    dataloader = DataLoader(dataset, batch_size=64, sampler=sampler)
+    train_loader = DataLoader(dataset, batch_size=64, shuffle=True)
 
-    model = Net().to(rank)
-    model = DDP(model, device_ids=[rank])
+    model = Net().to(device)
+    if torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
 
     optimizer = optim.Adadelta(model.parameters(), lr=1.0)
     criterion = nn.CrossEntropyLoss()
 
-    model.train()
     for epoch in range(10):
-        sampler.set_epoch(epoch)
-        for batch_idx, (data, target) in enumerate(dataloader):
-            data, target = data.to(rank), target.to(rank)
-            optimizer.zero_grad()
-            output = model(data)
-            loss = criterion(output, target)
-            loss.backward()
-            optimizer.step()
-            if batch_idx % 100 == 0 and rank == 0:
-                print(f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(dataloader.dataset)} '
-                      f'({100. * batch_idx / len(dataloader):.0f}%)]\tLoss: {loss.item():.6f}')
+        train(model, device, train_loader, optimizer, criterion, epoch)
 
-    if rank == 0:
-        torch.save(model.state_dict(), "mnist_ddp_model.pt")
-
-
-def main():
-    world_size = torch.cuda.device_count()
-    torch.multiprocessing.spawn(train, args=(
-        world_size,), nprocs=world_size, join=True)
+    torch.save(model.state_dict(), "mnist_model.pt")
+    print("Training completed. Model saved as mnist_model.pt")
 
 
 if __name__ == "__main__":
